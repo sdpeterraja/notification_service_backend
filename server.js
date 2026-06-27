@@ -29,6 +29,7 @@ const corsOptions = {
     'http://localhost:5000',   // Backend itself
     'http://127.0.0.1:5173',
     'http://127.0.0.1:3000',
+    'http://127.0.0.1:8080',
     'http://localhost:8080'
   ],
   credentials: true,            // Allow cookies/auth headers
@@ -73,6 +74,11 @@ const listRoutes = require('./routes/listRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
 const webhookRoutes = require('./routes/webhookRoutes');
 const templateSyncRoutes = require('./routes/templateSyncRoutes');
+const automationRoutes = require('./routes/automationRoutes');
+const whatsappRoutes = require('./routes/whatsappRoutes');
+const whatsappController = require('./controllers/whatsappController');
+const aiRoutes = require('./routes/aiRoutes');
+const canvaRoutes = require('./routes/canvaRoutes');
 
 // Routes - CORRECTED
 app.use('/api/auth', authRoutes);     // This gives: /api/auth/login, /api/auth/register
@@ -86,11 +92,15 @@ app.use('/api/lists', listRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/templates/brevo', templateSyncRoutes);
+app.use('/api/automations', automationRoutes);
+app.use('/api/whatsapp', whatsappRoutes);
+app.use('/api/ai', aiRoutes);
+app.use('/api/canva', canvaRoutes);
 
 // Health check
 app.get('/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'healthy', 
+  res.status(200).json({
+    status: 'healthy',
     timestamp: new Date().toISOString(),
     uptime: process.uptime()
   });
@@ -114,19 +124,19 @@ app.get('/', (req, res) => {
 
 // 404 handler
 app.use((req, res) => {
-  res.status(404).json({ 
-    success: false, 
-    message: 'Route not found' 
+  res.status(404).json({
+    success: false,
+    message: 'Route not found'
   });
 });
 
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Error:', err.stack);
-  
+
   const status = err.status || 500;
   const message = err.message || 'Internal server error';
-  
+
   res.status(status).json({
     success: false,
     message,
@@ -140,6 +150,9 @@ const server = app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📡 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🔗 Client URL: ${process.env.CLIENT_URL || 'http://localhost:5173'}`);
+
+  // Start the WhatsApp campaign scheduler daemon loop
+  setInterval(whatsappController.runSchedulerCycle, 4000);
 });
 
 // Graceful shutdown

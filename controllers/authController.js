@@ -4,10 +4,19 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
 class AuthController {
+  constructor() {
+    const proto = Object.getPrototypeOf(this);
+    for (const key of Object.getOwnPropertyNames(proto)) {
+      if (key !== 'constructor' && typeof this[key] === 'function') {
+        this[key] = this[key].bind(this);
+      }
+    }
+  }
+
   // Register user
   async register(req, res) {
     try {
-      const { email, password, name } = req.body;
+      const { email, password, name, organizationName } = req.body;
       
       // Validate input
       if (!email || !password) {
@@ -33,7 +42,8 @@ class AuthController {
       const user = await User.create({
         email: email.toLowerCase(),
         password: hashedPassword,
-        name
+        name,
+        organizationName
       });
       
       // Generate token
@@ -50,7 +60,8 @@ class AuthController {
             id: user._id,
             email: user.email,
             name: user.name,
-            role: user.role
+            role: user.role,
+            organizationName: user.organizationName
           },
           token
         }
@@ -109,7 +120,8 @@ class AuthController {
             id: user._id,
             email: user.email,
             name: user.name,
-            role: user.role
+            role: user.role,
+            organizationName: user.organizationName
           },
           token
         }

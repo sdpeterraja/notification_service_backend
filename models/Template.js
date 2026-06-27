@@ -20,7 +20,15 @@ const templateSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  attachments: [{
+    url: String,
+    name: String,
+    content: String
+  }],
   previewImage: {
+    type: String
+  },
+  jsonState: {
     type: String
   },
   category: {

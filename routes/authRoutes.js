@@ -125,7 +125,8 @@ router.post('/login', async (req, res) => {
           id: user._id,
           email: user.email,
           name: user.name,
-          role: user.role || 'user'
+          role: user.role || 'user',
+          organizationName: user.organizationName
         },
         token
       }
@@ -144,7 +145,7 @@ router.post('/register', async (req, res) => {
   console.log('Register attempt:', req.body.email);
   
   try {
-    const { email, password, name } = req.body;
+    const { email, password, name, organizationName } = req.body;
     
     // Validate input
     if (!email || !password) {
@@ -170,7 +171,8 @@ router.post('/register', async (req, res) => {
     const user = await User.create({
       email: email.toLowerCase(),
       password: hashedPassword,
-      name: name || email.split('@')[0]
+      name: name || email.split('@')[0],
+      organizationName: organizationName || 'My Organization'
     });
     
     // Generate token
@@ -189,7 +191,8 @@ router.post('/register', async (req, res) => {
           id: user._id,
           email: user.email,
           name: user.name,
-          role: user.role || 'user'
+          role: user.role || 'user',
+          organizationName: user.organizationName
         },
         token
       }

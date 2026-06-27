@@ -7,6 +7,15 @@ const BrevoService = require('../services/brevoService');
 const crypto = require('crypto');
 
 class BrevoController {
+  constructor() {
+    const proto = Object.getPrototypeOf(this);
+    for (const key of Object.getOwnPropertyNames(proto)) {
+      if (key !== 'constructor' && typeof this[key] === 'function') {
+        this[key] = this[key].bind(this);
+      }
+    }
+  }
+
   // Test Brevo connection
   async testConnection(req, res) {
     try {
@@ -695,6 +704,47 @@ class BrevoController {
     }
   }
   
+  // Get transactional logs
+  async getTransactions(req, res) {
+    try {
+      const brevoConfig = await BrevoConfig.findOne({ 
+        userId: req.user.userId,
+        isConnected: true
+      });
+      
+      if (!brevoConfig) {
+        return res.status(404).json({
+          success: false,
+          message: 'Brevo not connected'
+        });
+      }
+      
+      const { limit = 50, startDate, endDate, email, event } = req.query;
+      const opts = {
+        limit: parseInt(limit),
+        sort: 'desc'
+      };
+      
+      if (startDate) opts.startDate = startDate;
+      if (endDate) opts.endDate = endDate;
+      if (email) opts.email = email;
+      if (event) opts.event = event;
+      
+      const transactions = await BrevoService.getTransacEmailsEvents(brevoConfig.apiKey, opts);
+      
+      res.json({
+        success: true,
+        data: transactions
+      });
+    } catch (error) {
+      console.error('Get transactions error:', error);
+      res.status(500).json({
+        success: false,
+        message: error.message || 'Failed to fetch transactions from Brevo'
+      });
+    }
+  }
+
   // Helper: Log activity
   async logActivity(userId, action, req) {
     try {

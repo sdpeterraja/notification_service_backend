@@ -9,8 +9,7 @@ const brevoConfigSchema = new mongoose.Schema({
     unique: true
   },
   apiKey: {
-    type: String,
-    required: true
+    type: String
   },
   senderEmail: {
     type: String,

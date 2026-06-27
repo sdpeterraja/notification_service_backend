@@ -3,6 +3,15 @@ const Template = require('../models/Template');
 const Campaign = require('../models/Campaign');
 
 class TemplateController {
+  constructor() {
+    const proto = Object.getPrototypeOf(this);
+    for (const key of Object.getOwnPropertyNames(proto)) {
+      if (key !== 'constructor' && typeof this[key] === 'function') {
+        this[key] = this[key].bind(this);
+      }
+    }
+  }
+
   // Get all templates
   async getTemplates(req, res) {
     try {
@@ -81,7 +90,7 @@ class TemplateController {
   // Create template
   async createTemplate(req, res) {
     try {
-      const { name, subject, content, previewImage, category, tags } = req.body;
+      const { name, subject, content, previewImage, category, tags, jsonState } = req.body;
       
       if (!name || !subject || !content) {
         return res.status(400).json({
@@ -97,7 +106,8 @@ class TemplateController {
         content,
         previewImage,
         category,
-        tags: tags || []
+        tags: tags || [],
+        jsonState
       });
       
       res.status(201).json({

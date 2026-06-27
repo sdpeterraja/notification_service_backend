@@ -51,24 +51,54 @@ class BrevoService {
     
     // For direct sending to specific emails
     if (campaign.targetEmails && campaign.targetEmails.length > 0) {
-      const sendSmtpEmail = new Brevo.SendSmtpEmail();
-      sendSmtpEmail.subject = campaign.subject;
-      sendSmtpEmail.htmlContent = emailContent;
-      sendSmtpEmail.sender = {
-        name: brevoConfig.senderName || 'CampaignFlow',
-        email: brevoConfig.senderEmail
-      };
-      sendSmtpEmail.to = campaign.targetEmails.map(email => ({ email }));
+      const batchSize = 100;
+      let firstMessageId = null;
       
-      if (campaign.settings.trackOpens) {
-        sendSmtpEmail.replyTo = brevoConfig.senderEmail;
+      for (let i = 0; i < campaign.targetEmails.length; i += batchSize) {
+        const batch = campaign.targetEmails.slice(i, i + batchSize);
+        const sendSmtpEmail = new Brevo.SendSmtpEmail();
+        sendSmtpEmail.sender = {
+          name: brevoConfig.senderName || 'CampaignFlow',
+          email: brevoConfig.senderEmail
+        };
+        
+        if (campaign.settings.trackOpens) {
+          sendSmtpEmail.replyTo = brevoConfig.senderEmail;
+        }
+        
+        // Set global root-level fields (required by Brevo schema validation when using messageVersions)
+        sendSmtpEmail.subject = campaign.subject || 'Campaign';
+        sendSmtpEmail.htmlContent = emailContent || 'Content';
+        
+        if (campaign.attachments && campaign.attachments.length > 0) {
+          sendSmtpEmail.attachment = campaign.attachments.map(att => ({
+            ...(att.url ? { url: att.url } : {}),
+            ...(att.name ? { name: att.name } : {}),
+            ...(att.content ? { content: att.content } : {})
+          }));
+        }
+        
+        // Use messageVersions for bulk sending individually
+        sendSmtpEmail.messageVersions = batch.map(email => ({
+          to: [{ email }],
+          subject: campaign.subject,
+          htmlContent: emailContent
+        }));
+        
+        const response = await this.apiInstance.sendTransacEmail(sendSmtpEmail);
+        const returnedIds = response.messageIds || [];
+        if (!firstMessageId) {
+          firstMessageId = returnedIds[0] || response.messageId;
+        }
+        
+        if (i + batchSize < campaign.targetEmails.length) {
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
       }
-      
-      const response = await this.apiInstance.sendTransacEmail(sendSmtpEmail);
       
       return {
         recipients: campaign.targetEmails.length,
-        messageId: response.messageId
+        messageId: firstMessageId
       };
     }
     
@@ -82,6 +112,15 @@ class BrevoService {
     const sendSmtpEmail = new Brevo.SendSmtpEmail();
     sendSmtpEmail.subject = campaign.subject;
     sendSmtpEmail.htmlContent = emailContent;
+    
+    if (campaign.attachments && campaign.attachments.length > 0) {
+      sendSmtpEmail.attachment = campaign.attachments.map(att => ({
+        ...(att.url ? { url: att.url } : {}),
+        ...(att.name ? { name: att.name } : {}),
+        ...(att.content ? { content: att.content } : {})
+      }));
+    }
+    
     sendSmtpEmail.sender = {
       name: brevoConfig.senderName || 'CampaignFlow',
       email: brevoConfig.senderEmail

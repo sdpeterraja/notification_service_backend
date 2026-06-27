@@ -9,5 +9,6 @@ router.post('/test', brevoController.testConnection);
 router.post('/connect', brevoController.connect);
 router.post('/disconnect', brevoController.disconnect);
 router.get('/status', brevoController.getStatus);
+router.get('/transactions', brevoController.getTransactions);
 
 module.exports = router;

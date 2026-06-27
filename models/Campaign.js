@@ -16,6 +16,11 @@ const campaignSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  replyTo: {
+    type: String,
+    trim: true,
+    lowercase: true
+  },
   status: {
     type: String,
     enum: ['draft', 'scheduled', 'sending', 'sent', 'failed', 'cancelled'],
@@ -35,6 +40,11 @@ const campaignSchema = new mongoose.Schema({
   content: {
     type: String
   },
+  attachments: [{
+    url: String,
+    name: String,
+    content: String
+  }],
   
   // Personalized recipients (for CSV upload and individual personalization)
   recipients: [{
@@ -230,6 +240,22 @@ const campaignSchema = new mongoose.Schema({
       type: mongoose.Schema.Types.Mixed
     }
   },
+
+  // Approvals & Comments Matrix
+  approvers: [{
+    name: { type: String, required: true },
+    role: { type: String, required: true },
+    status: {
+      type: String,
+      enum: ['Approved', 'Pending', 'Rejected'],
+      default: 'Pending'
+    }
+  }],
+  comments: [{
+    user: { type: String, required: true },
+    text: { type: String, required: true },
+    time: { type: String, required: true }
+  }],
   
   createdAt: {
     type: Date,

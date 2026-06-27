@@ -9,6 +9,15 @@ const crypto = require('crypto');
 const mongoose = require('mongoose');
 
 class UserController {
+  constructor() {
+    const proto = Object.getPrototypeOf(this);
+    for (const key of Object.getOwnPropertyNames(proto)) {
+      if (key !== 'constructor' && typeof this[key] === 'function') {
+        this[key] = this[key].bind(this);
+      }
+    }
+  }
+
   // Get user profile
   async getProfile(req, res) {
     try {

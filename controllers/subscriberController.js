@@ -13,6 +13,15 @@ const fs = require('fs');
 const path = require('path');
 
 class SubscriberController {
+  constructor() {
+    const proto = Object.getPrototypeOf(this);
+    for (const key of Object.getOwnPropertyNames(proto)) {
+      if (key !== 'constructor' && typeof this[key] === 'function') {
+        this[key] = this[key].bind(this);
+      }
+    }
+  }
+
   // Get all subscribers with filtering and pagination
   async getSubscribers(req, res) {
     try {
@@ -1393,6 +1402,60 @@ class SubscriberController {
   // Helper: Build MongoDB query from segment conditions
   buildSegmentQuery(conditions) {
     const query = {};
+    
+    if (!conditions) return query;
+
+    // Handle array of conditions from front-end builder
+    if (Array.isArray(conditions)) {
+      const andConditions = [];
+      for (const cond of conditions) {
+        const condQuery = {};
+        const field = cond.field;
+        const operator = cond.operator;
+        const value = cond.value;
+
+        if (field === 'Email Opened') {
+          if (operator === 'at least once') {
+            condQuery['statistics.openCount'] = { $gte: 1 };
+          }
+          if (value && !isNaN(value)) {
+            const dateLimit = new Date();
+            dateLimit.setDate(dateLimit.getDate() - parseInt(value));
+            condQuery['statistics.lastOpenAt'] = { $gte: dateLimit };
+          }
+        } else if (field === 'Email Clicked') {
+          if (operator === 'at least once') {
+            condQuery['statistics.clickCount'] = { $gte: 1 };
+          }
+          if (value && !isNaN(value)) {
+            const dateLimit = new Date();
+            dateLimit.setDate(dateLimit.getDate() - parseInt(value));
+            condQuery['statistics.lastClickAt'] = { $gte: dateLimit };
+          }
+        } else if (field === 'Tag') {
+          if (operator === 'is' || operator === 'contains') {
+            condQuery.tags = { $in: [value] };
+          } else if (operator === 'is not') {
+            condQuery.tags = { $nin: [value] };
+          }
+        } else if (field === 'Status') {
+          if (operator === 'is') {
+            condQuery.status = value.toLowerCase();
+          } else if (operator === 'is not') {
+            condQuery.status = { $ne: value.toLowerCase() };
+          }
+        }
+        
+        if (Object.keys(condQuery).length > 0) {
+          andConditions.push(condQuery);
+        }
+      }
+      
+      if (andConditions.length > 0) {
+        query.$and = andConditions;
+      }
+      return query;
+    }
     
     if (conditions.status) {
       query.status = conditions.status;

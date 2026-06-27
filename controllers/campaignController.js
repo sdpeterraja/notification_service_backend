@@ -8,6 +8,14 @@ const SibApiV3Sdk = require('sib-api-v3-sdk');
 const Subscriber = require('../models/Subscriber');  // ADD THIS
 
 class CampaignController {
+  constructor() {
+    const proto = Object.getPrototypeOf(this);
+    for (const key of Object.getOwnPropertyNames(proto)) {
+      if (key !== 'constructor' && typeof this[key] === 'function') {
+        this[key] = this[key].bind(this);
+      }
+    }
+  }
   
   // Helper method to initialize Brevo SDK
   initializeBrevoSDK() {
@@ -25,16 +33,24 @@ class CampaignController {
   // Get all campaigns
   async getCampaigns(req, res) {
     try {
-      const { status, type, page = 1, limit = 10, search } = req.query;
+      const { status, type, page = 1, limit = 10, search, period } = req.query;
       const query = { userId: req.user.userId };
       
-      if (status) query.status = status;
-      if (type) query.type = type;
+      if (status && status !== 'all') query.status = status;
+      if (type && type !== 'all') query.type = type;
       if (search) {
         query.$or = [
           { name: { $regex: search, $options: 'i' } },
           { subject: { $regex: search, $options: 'i' } }
         ];
+      }
+      if (period && period !== 'all') {
+        const days = parseInt(period);
+        if (!isNaN(days)) {
+          const dateLimit = new Date();
+          dateLimit.setDate(dateLimit.getDate() - days);
+          query.createdAt = { $gte: dateLimit };
+        }
       }
       
       const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -105,13 +121,15 @@ class CampaignController {
       const {
         name,
         subject,
+        replyTo,
         templateId,
         content,
         type,
         audienceList,
         targetEmails,
         scheduledFor,
-        recipients
+        recipients,
+        attachments
       } = req.body;
       
       if (!name || !subject) {
@@ -150,13 +168,31 @@ class CampaignController {
           status: 'pending'
         }));
       }
+
+      let finalAttachments = attachments || [];
+      if (templateId && finalAttachments.length === 0) {
+        try {
+          const template = await Template.findById(templateId);
+          if (template && template.attachments && template.attachments.length > 0) {
+            finalAttachments = template.attachments.map(att => ({
+              url: att.url,
+              name: att.name,
+              content: att.content
+            }));
+          }
+        } catch (templateErr) {
+          console.error('Error fetching template attachments:', templateErr);
+        }
+      }
       
       const campaignData = {
         userId: req.user.userId,
         name,
         subject,
+        replyTo: replyTo || null,
         templateId: templateId || null,
         content: content || null,
+        attachments: finalAttachments,
         type: finalRecipients.length > 0 ? 'personalized' : (type || 'regular'),
         audienceList: audienceList || null,
         targetEmails: finalTargetEmails,
@@ -181,6 +217,15 @@ class CampaignController {
       };
       
       const campaign = await Campaign.create(campaignData);
+      
+      if (templateId) {
+        try {
+          await Template.findByIdAndUpdate(templateId, { $inc: { usageCount: 1 } });
+          console.log(`Incremented usageCount for template: ${templateId}`);
+        } catch (updateErr) {
+          console.error('Error incrementing template usageCount:', updateErr);
+        }
+      }
       
       res.status(201).json({
         success: true,
@@ -282,19 +327,20 @@ async sendCampaign(req, res) {
       });
     }
     
-    if (!process.env.BREVO_API_KEY) {
-      console.error('BREVO_API_KEY is not set in environment variables');
-      return res.status(500).json({
+    const activeApiKey = brevoConfig.apiKey || process.env.BREVO_API_KEY;
+    if (!activeApiKey) {
+      console.error('Brevo API key is missing (neither user configured nor in environment)');
+      return res.status(400).json({
         success: false,
-        message: 'Server configuration error: Brevo API key missing'
+        message: 'Brevo API key is not configured. Please connect your Brevo channel in Settings.'
       });
     }
     
     const defaultClient = SibApiV3Sdk.ApiClient.instance;
     const apiKey = defaultClient.authentications['api-key'];
-    apiKey.apiKey = process.env.BREVO_API_KEY;
+    apiKey.apiKey = activeApiKey;
     
-    console.log('Brevo API Key loaded from environment');
+    console.log('Brevo API Key loaded for campaign dispatch');
     
     campaign.status = 'sending';
     await campaign.save();
@@ -308,108 +354,176 @@ async sendCampaign(req, res) {
     
     // Case 1: Send to individual personalized recipients (Transactional API)
     if (campaign.recipients && campaign.recipients.length > 0) {
-      console.log(`Sending ${campaign.recipients.length} personalized emails...`);
+      console.log(`Sending ${campaign.recipients.length} personalized emails using Brevo messageVersions...`);
       
       const apiInstance = new SibApiV3Sdk.TransactionalEmailsApi();
+      const batchSize = 100;
       
-      for (const recipient of campaign.recipients) {
+      for (let i = 0; i < campaign.recipients.length; i += batchSize) {
+        const batch = campaign.recipients.slice(i, i + batchSize);
+        
         try {
-          const emailContent = recipient.personalizedContent || campaign.content;
-          const emailSubject = recipient.personalizedSubject || campaign.subject;
-          
           const sendSmtpEmail = new SibApiV3Sdk.SendSmtpEmail();
-          sendSmtpEmail.subject = emailSubject;
-          sendSmtpEmail.htmlContent = emailContent;
           sendSmtpEmail.sender = {
             name: brevoConfig.senderName || 'CampaignFlow',
             email: brevoConfig.senderEmail
           };
-          sendSmtpEmail.to = [{ 
-            email: recipient.email, 
-            name: recipient.name || recipient.email.split('@')[0] 
-          }];
           
-          if (campaign.settings?.trackOpens !== false) {
+          if (campaign.replyTo) {
+            sendSmtpEmail.replyTo = {
+              email: campaign.replyTo,
+              name: campaign.replyTo.split('@')[0]
+            };
+          } else {
             sendSmtpEmail.replyTo = {
               email: brevoConfig.senderEmail,
               name: brevoConfig.senderName || 'CampaignFlow'
             };
           }
           
-          console.log(`Sending email to ${recipient.email}...`);
-          const response = await apiInstance.sendTransacEmail(sendSmtpEmail);
-          console.log(`Email sent to ${recipient.email}:`, response.messageId);
+          // Set global root-level fields (required by Brevo schema validation when using messageVersions)
+          sendSmtpEmail.subject = campaign.subject || 'Campaign';
+          sendSmtpEmail.htmlContent = campaign.content || 'Content';
           
-          recipient.status = 'sent';
-          recipient.sentAt = new Date();
-          recipient.messageId = response.messageId;
-          messageIds.push(response.messageId);
-          sentCount++;
-          
-          // Store first message ID as brevoMessageId for webhook matching
-          if (!brevoMessageId) {
-            brevoMessageId = response.messageId;
+          if (campaign.attachments && campaign.attachments.length > 0) {
+            sendSmtpEmail.attachment = campaign.attachments.map(att => ({
+              ...(att.url ? { url: att.url } : {}),
+              ...(att.name ? { name: att.name } : {}),
+              ...(att.content ? { content: att.content } : {})
+            }));
           }
           
-          await new Promise(resolve => setTimeout(resolve, 100));
+          // Construct messageVersions for personalization and batching
+          sendSmtpEmail.messageVersions = batch.map(recipient => {
+            const emailContent = recipient.personalizedContent || campaign.content;
+            const emailSubject = recipient.subject || campaign.subject;
+            return {
+              to: [{
+                email: recipient.email,
+                name: recipient.name || recipient.email.split('@')[0]
+              }],
+              subject: emailSubject,
+              htmlContent: emailContent
+            };
+          });
           
+          console.log(`Sending batch of ${batch.length} personalized emails (offset: ${i})...`);
+          const response = await apiInstance.sendTransacEmail(sendSmtpEmail);
+          const returnedIds = response.messageIds || [];
+          console.log(`Batch sent successfully. Received ${returnedIds.length} message IDs.`);
+          
+          for (let j = 0; j < batch.length; j++) {
+            const recipient = batch[j];
+            const mId = returnedIds[j] || (response.messageId ? `${response.messageId}-${j}` : `batch-${i}-${j}`);
+            
+            recipient.status = 'sent';
+            recipient.sentAt = new Date();
+            recipient.messageId = mId;
+            messageIds.push(mId);
+            sentCount++;
+            
+            if (!brevoMessageId) {
+              brevoMessageId = mId;
+            }
+          }
         } catch (error) {
-          console.error(`Failed to send to ${recipient.email}:`, error.message);
-          recipient.status = 'failed';
-          recipient.errorMessage = error.message;
-          failedCount++;
-          errors.push({ email: recipient.email, error: error.message });
+          console.log(error)
+          console.error(`Failed to send personalized batch at offset ${i}:`, error.message);
+          for (const recipient of batch) {
+            recipient.status = 'failed';
+            recipient.errorMessage = error.message;
+            failedCount++;
+            errors.push({ email: recipient.email, error: error.message });
+          }
         }
+        
+        // Wait 300ms between batches to respect rate limits gently
+        await new Promise(resolve => setTimeout(resolve, 300));
       }
       
       // Store message IDs for webhook matching
-      campaign.brevoMessageId = brevoMessageId;
-      await campaign.save();
-      console.log(`✅ Saved brevoMessageId: ${brevoMessageId} to campaign ${campaign._id}`);
+      if (brevoMessageId) {
+        campaign.brevoMessageId = brevoMessageId;
+        await campaign.save();
+        console.log(`✅ Saved brevoMessageId: ${brevoMessageId} to campaign ${campaign._id}`);
+      }
       
     } 
-    // Case 2: Send to target emails list (Transactional API - Bulk)
+    // Case 2: Send to target emails list (Transactional API - Bulk with messageVersions)
     else if (campaign.targetEmails && campaign.targetEmails.length > 0) {
-      console.log(`Sending bulk email to ${campaign.targetEmails.length} recipients...`);
+      console.log(`Sending bulk email to ${campaign.targetEmails.length} recipients using Brevo messageVersions...`);
       
       const apiInstance = new SibApiV3Sdk.TransactionalEmailsApi();
       const emailContent = campaign.content;
       const emailSubject = campaign.subject;
+      const batchSize = 100;
       
-      const batchSize = 50;
       for (let i = 0; i < campaign.targetEmails.length; i += batchSize) {
         const batch = campaign.targetEmails.slice(i, i + batchSize);
-        const toEmails = batch.map(email => ({ 
-          email, 
-          name: email.split('@')[0] 
-        }));
         
         try {
           const sendSmtpEmail = new SibApiV3Sdk.SendSmtpEmail();
-          sendSmtpEmail.subject = emailSubject;
-          sendSmtpEmail.htmlContent = emailContent;
           sendSmtpEmail.sender = {
             name: brevoConfig.senderName || 'CampaignFlow',
             email: brevoConfig.senderEmail
           };
-          sendSmtpEmail.to = toEmails;
           
-          const response = await apiInstance.sendTransacEmail(sendSmtpEmail);
-          console.log(`Batch sent:`, response.messageId);
-          sentCount += batch.length;
-          messageIds.push(response.messageId);
-          
-          if (!brevoMessageId) {
-            brevoMessageId = response.messageId;
+          if (campaign.replyTo) {
+            sendSmtpEmail.replyTo = {
+              email: campaign.replyTo,
+              name: campaign.replyTo.split('@')[0]
+            };
+          } else {
+            sendSmtpEmail.replyTo = {
+              email: brevoConfig.senderEmail,
+              name: brevoConfig.senderName || 'CampaignFlow'
+            };
           }
           
+          // Set global root-level fields (required by Brevo schema validation when using messageVersions)
+          sendSmtpEmail.subject = emailSubject || 'Campaign';
+          sendSmtpEmail.htmlContent = emailContent || 'Content';
+          
+          if (campaign.attachments && campaign.attachments.length > 0) {
+            sendSmtpEmail.attachment = campaign.attachments.map(att => ({
+              ...(att.url ? { url: att.url } : {}),
+              ...(att.name ? { name: att.name } : {}),
+              ...(att.content ? { content: att.content } : {})
+            }));
+          }
+          
+          // Use messageVersions so each recipient gets an individual email copy (privacy compliant)
+          sendSmtpEmail.messageVersions = batch.map(email => ({
+            to: [{ 
+              email, 
+              name: email.split('@')[0] 
+            }],
+            subject: emailSubject,
+            htmlContent: emailContent
+          }));
+          
+          console.log(`Sending batch of ${batch.length} bulk emails (offset: ${i})...`);
+          const response = await apiInstance.sendTransacEmail(sendSmtpEmail);
+          const returnedIds = response.messageIds || [];
+          console.log(`Batch sent successfully. Received ${returnedIds.length} message IDs.`);
+          
+          sentCount += batch.length;
+          
+          for (let j = 0; j < batch.length; j++) {
+            const mId = returnedIds[j] || (response.messageId ? `${response.messageId}-${j}` : `batch-${i}-${j}`);
+            messageIds.push(mId);
+            
+            if (!brevoMessageId) {
+              brevoMessageId = mId;
+            }
+          }
         } catch (error) {
-          console.error(`Failed to send batch:`, error.message);
+          console.error(`Failed to send bulk batch at offset ${i}:`, error.message);
           failedCount += batch.length;
           errors.push({ batch: i, error: error.message });
         }
         
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, 300));
       }
       
       // Store message ID for webhook matching
@@ -437,6 +551,10 @@ async sendCampaign(req, res) {
       emailCampaign.recipients = {
         listIds: [parseInt(campaign.audienceList)]
       };
+      
+      if (campaign.replyTo) {
+        emailCampaign.replyTo = campaign.replyTo;
+      }
       
       const response = await apiInstance.createEmailCampaign(emailCampaign);
       brevoCampaignId = response.body.id;
@@ -573,6 +691,15 @@ async sendCampaign(req, res) {
           const sendSmtpEmail = new SibApiV3Sdk.SendSmtpEmail();
           sendSmtpEmail.subject = emailSubject;
           sendSmtpEmail.htmlContent = emailContent;
+          
+          if (campaign.attachments && campaign.attachments.length > 0) {
+            sendSmtpEmail.attachment = campaign.attachments.map(att => ({
+              ...(att.url ? { url: att.url } : {}),
+              ...(att.name ? { name: att.name } : {}),
+              ...(att.content ? { content: att.content } : {})
+            }));
+          }
+          
           sendSmtpEmail.sender = {
             name: brevoConfig.senderName || 'CampaignFlow',
             email: brevoConfig.senderEmail
@@ -654,6 +781,15 @@ async sendCampaign(req, res) {
       campaignData.status = 'draft';
       
       const duplicated = await Campaign.create(campaignData);
+      
+      if (duplicated.templateId) {
+        try {
+          await Template.findByIdAndUpdate(duplicated.templateId, { $inc: { usageCount: 1 } });
+          console.log(`Incremented usageCount for template on duplication: ${duplicated.templateId}`);
+        } catch (updateErr) {
+          console.error('Error incrementing template usageCount on duplication:', updateErr);
+        }
+      }
       
       res.status(201).json({
         success: true,
